@@ -2,7 +2,7 @@
 
 ```typescript
 // example.ts
-import { DataWriter, DataReader, jsonSerializer, createSerializer } from './index.js';
+import { DataWriter, DataReader, jsonSerializer, createSerializer } from '@elilee/index-file';
 
 // ============================================
 // 1. JSON 직렬화 (간단한 경우)
