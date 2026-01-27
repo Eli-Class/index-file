@@ -1,0 +1,29 @@
+{
+  "name": "@elilee/index-file",
+  "version": "1.0.0",
+  "description": "Use index file with elilee mmap-native",
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "main": "./dist/lib/index.js",
+  "types": "./dist/lib/index.d.ts",
+  "files": [
+    "dist/",
+    "lib/",
+    "tsconfig.json"
+  ],
+  "dependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0",
+    "@elilee/mmap-native": "git+https://git.satitech.co.kr/sati-open/sati.n-api.mmap.git"
+  },
+  "scripts": {
+    "prepare": "tsc -p tsconfig.json",
+    "build:ts": "tsc -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": ["linux", "darwin"],
+  "cpu": ["x64", "arm64"]
+}
