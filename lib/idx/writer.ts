@@ -1,141 +1,209 @@
 // src/index-file/writer.ts
 import * as fs from 'node:fs';
-import mmap from '@elilee/mmap-native';
-import { INDEX_HEADER_SIZE, FLAG_VALID } from './constants.js';
+import { INDEX_HEADER_SIZE, INDEX_ENTRY_SIZE, FLAG_VALID } from './constants.js';
 import { IndexProtocol } from './protocol.js';
-import type { IndexFileOptions } from './types.js';
+import { IndexFileOptionsRequired } from './types.js';
 
 export class IndexWriter {
-  private fd: number | null = null;
-  private buffer: Buffer | null = null;
-  private validCount = 0;
-  private dataFileSize = 0n;
-  private lastSequence = 0;
+    private fd: number | null = null;
+    private headerBuf: Buffer | null = null;
+    private entryBuf: Buffer | null = null;
 
-  readonly path: string;
-  readonly maxEntries: number;
-  readonly fileSize: number;
+    private writtenCnt = 0;
+    private dataFileSize = 0n;
+    private latestSequence = 0;
 
-  constructor(path: string, options: IndexFileOptions) {
-    this.path = path;
-    this.maxEntries = options.maxEntries;
-    this.fileSize = IndexProtocol.calcFileSize(options.maxEntries);
-  }
+    private path: string | null = null;
+    private fileSize: number = 0;
 
-  open(): void {
-    const isNew = !fs.existsSync(this.path);
+    // see IndexFileOptions
+    private maxEntries: number = 0;
+    private autoIncrementSequence: boolean = false;
 
-    this.fd = fs.openSync(this.path, isNew ? 'w+' : 'r+');
-
-    if (isNew) {
-      fs.ftruncateSync(this.fd, this.fileSize);
+    constructor(opt: IndexFileOptionsRequired) {
+        // Empty constructor - maxEntries provided in open()
+        this.maxEntries = opt.maxEntries;
+        this.autoIncrementSequence = opt.autoIncrementSequence;
     }
 
-    this.buffer = mmap.map(
-      this.fileSize,
-      mmap.PROT_READ | mmap.PROT_WRITE,
-      mmap.MAP_SHARED,
-      this.fd,
-      0
-    );
+    open(path: string, forceTruncate: boolean = false): number {
+        this.path = path;
 
-    if (isNew) {
-      const header = IndexProtocol.createHeader(this.maxEntries);
-      header.copy(this.buffer, 0);
-      this.syncHeader();
-    } else {
-      const header = IndexProtocol.readHeader(this.buffer);
-      this.validCount = header.validCount;
-      this.dataFileSize = header.dataFileSize;
-      this.lastSequence = header.lastSequence;
+        const isNew = !fs.existsSync(this.path);
+
+        if (isNew || forceTruncate) {
+            // New file: use provided values
+            this.fileSize = IndexProtocol.calcFileSize(this.maxEntries);
+            this.writtenCnt = 0;
+            this.dataFileSize = 0n;
+            this.latestSequence = 0;
+
+            this.fd = fs.openSync(this.path, 'w+');
+            fs.ftruncateSync(this.fd, this.fileSize);
+
+            // Allocate buffers for header and entry
+            this.headerBuf = Buffer.alloc(INDEX_HEADER_SIZE);
+            this.entryBuf = Buffer.alloc(INDEX_ENTRY_SIZE);
+
+            const header = IndexProtocol.createHeader(this.maxEntries, this.autoIncrementSequence);
+            header.copy(this.headerBuf, 0);
+
+            // Write header to file
+            fs.writeSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, 0);
+            fs.fsyncSync(this.fd);
+        } else {
+            // Existing file: read header first
+            this.fd = fs.openSync(this.path, 'r+');
+
+            try {
+                this.headerBuf = Buffer.alloc(INDEX_HEADER_SIZE);
+                this.entryBuf = Buffer.alloc(INDEX_ENTRY_SIZE);
+
+                fs.readSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, 0);
+                const header = IndexProtocol.readHeader(this.headerBuf);
+
+                if (this.maxEntries !== header.entryCount) {
+                    throw new Error(
+                        `maxEntries mismatch: provided ${this.maxEntries} but file has ${header.entryCount}`
+                    );
+                }
+                if (this.autoIncrementSequence !== header.autoIncrementSequence) {
+                    throw new Error(
+                        `autoIncrementSequence mismatch: provided ${this.autoIncrementSequence} but file has ${header.autoIncrementSequence}`
+                    );
+                }
+
+                const expectFileSize = IndexProtocol.calcFileSize(this.maxEntries);
+                const calcedFileSize = IndexProtocol.calcFileSize(header.entryCount);
+                if (expectFileSize !== calcedFileSize) {
+                    // if (opt.version !== header.version) { 버전이 다른거니까 어떻게 처리 할지는 추후 고민 TODO }
+                    throw new Error(
+                        `Indexfile size calc is invalid : provided ${expectFileSize} but file has ${calcedFileSize}`
+                    );
+                }
+
+                this.fileSize = calcedFileSize;
+                this.writtenCnt = header.writtenCnt;
+                this.dataFileSize = header.dataFileSize;
+                this.latestSequence = header.latestSequence;
+            } catch (error) {
+                // Clean up resources on error
+                if (this.fd !== null) {
+                    fs.closeSync(this.fd);
+                    this.fd = null;
+                }
+                this.headerBuf = null;
+                this.entryBuf = null;
+                throw error;
+            }
+        }
+
+        return this.writtenCnt;
     }
-  }
 
-  write(
-    index: number,
-    sequence: number,
-    offset: bigint,
-    length: number,
-    timestamp?: bigint
-  ): boolean {
-    if (!this.buffer) throw new Error('Index file not opened');
-    if (index < 0 || index >= this.maxEntries) return false;
+    write(
+        offset: bigint,
+        length: number,
+        sequence?: number,
+        timestamp?: bigint
+    ): boolean {
+        if (!this.entryBuf || this.fd === null) throw new Error('Index file not opened');
+        if (this.writtenCnt >= this.maxEntries) {
+            throw new Error(`Data count exceed provide : ${this.writtenCnt + 1} - max : ${this.maxEntries}`);
+        }
 
-    const ts = timestamp ?? BigInt(Date.now()) * 1000000n;
+        // Calculate sequence
+        let seq: number;
+        if (!this.autoIncrementSequence) {
+            if (sequence === undefined) {
+                throw new Error('sequence is required when autoIncrementSequence is false');
+            }
+            seq = sequence;
+        } else {
+            seq = this.writtenCnt + 1;
+        }
 
-    IndexProtocol.writeEntry(this.buffer, index, {
-      sequence,
-      timestamp: ts,
-      offset,
-      length,
-      flags: FLAG_VALID,
-    });
+        const ts = timestamp ?? BigInt(Date.now()) * 1000000n;
 
-    this.validCount++;
-    if (sequence > this.lastSequence) {
-      this.lastSequence = sequence;
+        // Create a temporary buffer for this entry
+        const tempBuf = Buffer.alloc(INDEX_HEADER_SIZE + (this.writtenCnt + 1) * INDEX_ENTRY_SIZE);
+
+        // Write entry to temp buffer
+        IndexProtocol.writeEntry(tempBuf, this.writtenCnt, {
+            sequence: seq,
+            timestamp: ts,
+            offset,
+            length,
+            flags: FLAG_VALID,
+        });
+
+        // Calculate file offset for this entry
+        const fileOffset = INDEX_HEADER_SIZE + this.writtenCnt * INDEX_ENTRY_SIZE;
+
+        // Write entry to file
+        fs.writeSync(this.fd, tempBuf, fileOffset, INDEX_ENTRY_SIZE, fileOffset);
+
+        this.writtenCnt++;
+        this.latestSequence = seq;
+
+        const newDataEnd = offset + BigInt(length);
+        if (newDataEnd > this.dataFileSize) {
+            this.dataFileSize = newDataEnd;
+        }
+
+        return true;
     }
 
-    const newDataEnd = offset + BigInt(length);
-    if (newDataEnd > this.dataFileSize) {
-      this.dataFileSize = newDataEnd;
+    getLatestSequence(): number {
+        return this.latestSequence;
     }
 
-    return true;
-  }
+    syncHeader(): void {
+        if (!this.headerBuf || this.fd === null) return;
 
-  append(offset: bigint, length: number, timestamp?: bigint): number {
-    const index = this.validCount;
-    if (index >= this.maxEntries) return -1;
+        // Update header counts
+        IndexProtocol.updateHeaderCounts(
+            this.headerBuf,
+            this.writtenCnt,
+            this.dataFileSize,
+            this.latestSequence
+        );
 
-    const sequence = this.lastSequence + 1;
-    this.write(index, sequence, offset, length, timestamp);
-    return index;
-  }
+        // Write header to file
+        fs.writeSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, 0);
+    }
 
-  getLastSequence(): number {
-    return this.lastSequence;
-  }
+    syncAll(): void {
+        if (this.fd === null) return;
 
-  getNextSequence(): number {
-    return this.lastSequence + 1;
-  }
+        // Sync header first
+        this.syncHeader();
 
-  syncHeader(): void {
-    if (!this.buffer) return;
-    IndexProtocol.updateHeaderCounts(
-      this.buffer,
-      this.validCount,
-      this.dataFileSize,
-      this.lastSequence
-    );
-    mmap.sync(this.buffer, 0, INDEX_HEADER_SIZE, mmap.MS_ASYNC);
-  }
+        // Sync all file changes to disk
+        fs.fsyncSync(this.fd);
+    }
 
-  syncAll(): void {
-    if (!this.buffer) return;
-    this.syncHeader();
-    mmap.sync(this.buffer, 0, this.fileSize, mmap.MS_SYNC);
-  }
+    close(): void {
+        if (this.fd === null) return;
 
-  close(): void {
-    if (!this.buffer || this.fd === null) return;
+        // 1. Sync all changes
+        this.syncAll();
 
-    this.syncAll();
-    mmap.unmap(this.buffer);
-    fs.closeSync(this.fd);
+        // 2. Close file descriptor
+        fs.closeSync(this.fd);
+        this.fd = null;
 
-    this.buffer = null;
-    this.fd = null;
-  }
+        // 3. Clean up buffers
+        this.headerBuf = null;
+        this.entryBuf = null;
+    }
 
-  getStats() {
-    return {
-      path: this.path,
-      maxEntries: this.maxEntries,
-      validCount: this.validCount,
-      dataFileSize: this.dataFileSize,
-      lastSequence: this.lastSequence,
-    };
-  }
+    getStats() {
+        return {
+            path: this.path,
+            writtenCnt: this.writtenCnt,
+            dataFileSize: this.dataFileSize,
+            latestSequence: this.latestSequence,
+        };
+    }
 }

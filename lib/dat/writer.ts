@@ -2,119 +2,189 @@
 import * as fs from 'node:fs';
 import { DATA_HEADER_SIZE } from './constants.js';
 import { DataProtocol } from './protocol.js';
-import { IndexWriter } from '../idx/index.js';
+import { IndexWriter, IndexFileOptionsRequired } from '../idx/index.js';
 import type { Serializer, DataFileOptions } from './types.js';
 
 export class DataWriter<T> {
-  private fd: number | null = null;
-  private headerBuf: Buffer | null = null;
-  private currentOffset: bigint = BigInt(DATA_HEADER_SIZE);
-  private recordCount = 0;
+    private fd: number | null = null;
+    private headerBuf: Buffer | null = null;
+    private currentOffset: bigint = BigInt(DATA_HEADER_SIZE);
+    private recordCount = 0;
 
-  private indexWriter: IndexWriter;
-  private serializer: Serializer<T>;
+    private indexWriter: IndexWriter;
 
-  readonly dataPath: string;
-  readonly indexPath: string;
+    // See DataFileOptions
+    private readonly serializer: Serializer<T>;
+    private readonly forceTruncate: boolean;
 
-  constructor(basePath: string, options: DataFileOptions<T>) {
-    this.dataPath = `${basePath}.dat`;
-    this.indexPath = `${basePath}.idx`;
-    this.serializer = options.serializer;
+    private latestSequence: number = 0;
 
-    const maxEntries = options.maxEntries ?? 10_000_000;
-    this.indexWriter = new IndexWriter(this.indexPath, { maxEntries });
-  }
+    private readonly indexFileOpt: IndexFileOptionsRequired;
 
-  open(): void {
-    const isNew = !fs.existsSync(this.dataPath);
+    private dataPath: string | null = null;
+    private indexPath: string | null = null;
 
-    this.fd = fs.openSync(this.dataPath, isNew ? 'w+' : 'r+');
-    this.headerBuf = Buffer.alloc(DATA_HEADER_SIZE);
 
-    if (isNew) {
-      const header = DataProtocol.createHeader();
-      fs.writeSync(this.fd, header, 0, DATA_HEADER_SIZE, 0);
-      this.currentOffset = BigInt(DATA_HEADER_SIZE);
-      this.recordCount = 0;
-    } else {
-      fs.readSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
-      const header = DataProtocol.readHeader(this.headerBuf);
-      this.currentOffset = header.fileSize;
-      this.recordCount = header.recordCount;
+    constructor(options: DataFileOptions<T>) {
+        this.serializer = options.serializer;
+        this.forceTruncate = options.forceTruncate ?? false;
+
+        this.indexFileOpt = {
+            maxEntries: options.indexFileOpt.maxEntries ?? 10_000_000,
+            autoIncrementSequence: options.indexFileOpt.autoIncrementSequence ?? false
+        }
+
+        this.indexWriter = new IndexWriter(this.indexFileOpt);
     }
 
-    this.indexWriter.open();
-  }
+    open(basePath: string): void {
+        this.dataPath = `${basePath}.dat`;
+        this.indexPath = `${basePath}.idx`;
 
-  append(data: T, timestamp?: bigint): number {
-    if (this.fd === null) throw new Error('Data file not opened');
+        // Index file 을 Open 함으로써 파일을 시작 할 수 있는지 검증 (Throw 로써)
+        // Open index file with maxEntries and autoIncrementSequence
+        const writtenCount = this.indexWriter.open(this.indexPath, this.forceTruncate);
+        const isNew = !fs.existsSync(this.dataPath);
 
-    const buf = DataProtocol.serializeRecord(data, this.serializer);
-    const offset = this.currentOffset;
+        // Index file 은 초기화인데, 신규파일 혹은 강제 클리어가 아니라면
+        if (writtenCount === 0 && !(isNew || this.forceTruncate)) {
+            throw new Error(`Index file & Data File is invalid ${this.indexPath} is initial but ${this.dataPath} is exists`);
+        }
+        if (writtenCount > 0 && isNew) {
+            throw new Error(`Index file & Data File is invalid data of ${this.indexPath} | ${writtenCount} is exists but ${this.dataPath} is not exists`);
+        }
 
-    fs.writeSync(this.fd, buf, 0, buf.length, Number(offset));
+        // Warn if forceTruncate will delete existing data
+        if (this.forceTruncate && !isNew) {
+            const stats = fs.statSync(this.dataPath);
+            const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
+            console.warn(
+                `[DataWriter] forceTruncate enabled: Deleting ${sizeMB} MB of existing data\n` +
+                `  Index: ${this.indexPath} (${writtenCount} records)\n` +
+                `  Data: ${this.dataPath}`
+            );
+        }
 
-    const sequence = this.indexWriter.getNextSequence();
-    const ts = timestamp ?? BigInt(Date.now()) * 1000000n;
+        this.fd = fs.openSync(this.dataPath,
+            isNew || this.forceTruncate ? 'w+' : 'r+');
 
-    this.indexWriter.append(offset, buf.length, ts);
+        try {
+            this.headerBuf = Buffer.alloc(DATA_HEADER_SIZE);
 
-    this.currentOffset += BigInt(buf.length);
-    this.recordCount++;
+            if (isNew || this.forceTruncate) {
+                const header = DataProtocol.createHeader();
+                fs.writeSync(this.fd, header, 0, DATA_HEADER_SIZE, 0);
+                this.currentOffset = BigInt(DATA_HEADER_SIZE);
+                this.recordCount = 0;
+                this.latestSequence = 0;
+            } else {
+                fs.readSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
+                const header = DataProtocol.readHeader(this.headerBuf);
 
-    return sequence;
-  }
+                // Validate: Data file recordCount must match Index file writtenCnt
+                if (header.recordCount !== writtenCount) {
+                    throw new Error(
+                        `Data file record count mismatch: Data has ${header.recordCount} but Index has ${writtenCount}`
+                    );
+                }
 
-  appendBulk(records: T[], timestamp?: bigint): number[] {
-    const sequences: number[] = [];
-    const ts = timestamp ?? BigInt(Date.now()) * 1000000n;
-
-    for (const record of records) {
-      const seq = this.append(record, ts);
-      sequences.push(seq);
+                this.currentOffset = header.fileSize;
+                this.recordCount = header.recordCount;
+                this.latestSequence = this.indexWriter.getLatestSequence();
+            }
+        } catch (error) {
+            // Clean up resources on error
+            if (this.fd !== null) {
+                fs.closeSync(this.fd);
+                this.fd = null;
+            }
+            this.headerBuf = null;
+            throw error;
+        }
     }
 
-    return sequences;
-  }
+    append(data: T, sequence?: number, timestamp?: bigint): number {
+        if (this.fd === null) throw new Error('Data file not opened');
 
-  getLastSequence(): number {
-    return this.indexWriter.getLastSequence();
-  }
+        const buf = DataProtocol.serializeRecord(data, this.serializer);
+        const offset = this.currentOffset;
 
-  getNextSequence(): number {
-    return this.indexWriter.getNextSequence();
-  }
+        fs.writeSync(this.fd, buf, 0, buf.length, Number(offset));
 
-  sync(): void {
-    if (this.fd === null || !this.headerBuf) return;
+        // Write to index file
+        this.indexWriter.write(offset, buf.length, sequence, timestamp);
 
-    DataProtocol.updateHeader(this.headerBuf, this.currentOffset, this.recordCount);
-    fs.writeSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
-    fs.fsyncSync(this.fd);
+        // Update latestSequence to the most recent sequence
+        this.latestSequence = this.indexWriter.getLatestSequence();
 
-    this.indexWriter.syncAll();
-  }
+        this.currentOffset += BigInt(buf.length);
+        ++this.recordCount;
 
-  close(): void {
-    this.sync();
-
-    if (this.fd !== null) {
-      fs.closeSync(this.fd);
-      this.fd = null;
+        return this.latestSequence;
     }
 
-    this.indexWriter.close();
-    this.headerBuf = null;
-  }
+    /*
+    appendBulk(records: T[], sequences?: number[], timestamp?: bigint): number[] {
+        // Runtime check: sequences required when autoIncrementSequence is false
+        if (!this.autoIncrementSequence) {
+            if (!sequences) {
+                throw new Error('sequences is required when autoIncrementSequence is false');
+            }
+            if (sequences.length !== records.length) {
+                throw new Error(`sequences length (${sequences.length}) must match records length (${records.length})`);
+            }
+        }
 
-  getStats() {
-    return {
-      dataPath: this.dataPath,
-      indexPath: this.indexPath,
-      currentOffset: this.currentOffset,
-      recordCount: this.recordCount,
-      lastSequence: this.indexWriter.getLastSequence(),
-    };
-  }
+        const resultSequences: number[] = [];
+        const ts = timestamp ?? BigInt(Date.now()) * 1000000n;
+
+        for (let i = 0; i < records.length; i++) {
+            const seq = sequences?.[i];
+            const resultSeq = this.append(records[i], seq, ts);
+            resultSequences.push(resultSeq);
+        }
+
+        return resultSequences;
+    }
+    */
+
+    getLatestSequence(): number {
+        return this.latestSequence;
+    }
+
+    getNextSequence(): number {
+        return this.latestSequence + 1;
+    }
+
+    sync(): void {
+        if (this.fd === null || !this.headerBuf) return;
+
+        DataProtocol.updateHeader(this.headerBuf, this.currentOffset, this.recordCount);
+        fs.writeSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
+        fs.fsyncSync(this.fd);
+
+        this.indexWriter.syncAll();
+    }
+
+    close(): void {
+        this.sync();
+
+        if (this.fd !== null) {
+            fs.closeSync(this.fd);
+            this.fd = null;
+        }
+
+        this.indexWriter.close();
+        this.headerBuf = null;
+    }
+
+    getStats() {
+        return {
+            dataPath: this.dataPath,
+            indexPath: this.indexPath,
+            currentOffset: this.currentOffset,
+            recordCount: this.recordCount,
+            latestSequence: this.indexWriter.getLatestSequence(),
+        };
+    }
 }

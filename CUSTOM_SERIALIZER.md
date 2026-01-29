@@ -1,3 +1,5 @@
+가변 길이 배열이 포함된 데이터의 커스텀 바이너리 직렬화 방법을 보여드릴게요.
+
 ```typescript
 // 가변 배열 직렬화 예시
 import { createSerializer, DataWriter, DataReader } from './src/data-file/index.js';

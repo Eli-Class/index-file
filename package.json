@@ -14,8 +14,7 @@
   ],
   "dependencies": {
     "typescript": "^5.7.0",
-    "@types/node": "^22.0.0",
-    "@elilee/mmap-native": "git+https://git.satitech.co.kr/sati-open/sati.n-api.mmap.git"
+    "@types/node": "^22.0.0"
   },
   "scripts": {
     "prepare": "tsc -p tsconfig.json",
