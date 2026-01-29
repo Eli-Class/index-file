@@ -47,9 +47,6 @@ export class DataWriter<T> {
         const isNew = !fs.existsSync(this.dataPath);
 
         // Index file 은 초기화인데, 신규파일 혹은 강제 클리어가 아니라면
-        if (writtenCount === 0 && !(isNew || this.forceTruncate)) {
-            throw new Error(`Index file & Data File is invalid ${this.indexPath} is initial but ${this.dataPath} is exists`);
-        }
         if (writtenCount > 0 && isNew) {
             throw new Error(`Index file & Data File is invalid data of ${this.indexPath} | ${writtenCount} is exists but ${this.dataPath} is not exists`);
         }
