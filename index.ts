@@ -1,1 +1,1 @@
-export * from './dat/index.js';
+export * from './lib/dat/index.js';
