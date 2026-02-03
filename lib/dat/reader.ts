@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import { DATA_HEADER_SIZE } from './constants.js';
 import { DataProtocol, DataHeader } from './protocol.js';
 import { IndexReader } from '../idx/index.js';
-import type { Serializer, DataEntry } from './types.js';
+import type { Serializer, DataEntry, DataFileReaderOptions } from './types.js';
 
 export class DataReader<T> {
     private fd: number | null = null;
@@ -12,17 +12,18 @@ export class DataReader<T> {
     private indexReader: IndexReader;
     private serializer: Serializer<T>;
 
-    readonly dataPath: string;
-    readonly indexPath: string;
+    private dataPath: string | null = null;
+    private indexPath: string | null = null;
 
-    constructor(basePath: string, serializer: Serializer<T>) {
-        this.dataPath = `${basePath}.dat`;
-        this.indexPath = `${basePath}.idx`;
-        this.serializer = serializer;
-        this.indexReader = new IndexReader(this.indexPath);
+    constructor(options: DataFileReaderOptions<T>) {
+        this.serializer = options.serializer;
+        this.indexReader = new IndexReader();
     }
 
-    open(): void {
+    open(basePath: string): void {
+        this.dataPath = `${basePath}.dat`;
+        this.indexPath = `${basePath}.idx`;
+
         this.fd = fs.openSync(this.dataPath, 'r');
 
         // Read header only
@@ -30,7 +31,7 @@ export class DataReader<T> {
         fs.readSync(this.fd, headerBuf, 0, DATA_HEADER_SIZE, 0);
         this.header = DataProtocol.readHeader(headerBuf);
 
-        this.indexReader.open();
+        this.indexReader.open(this.indexPath);
     }
 
     private readRecord(offset: bigint, length: number): Buffer {
@@ -202,6 +203,10 @@ export class DataReader<T> {
 
     getLastSequence(): number {
         return this.indexReader.getHeader().latestSequence;
+    }
+
+    getFlags(): number {
+        return this.indexReader.getFlags();
     }
 
     close(): void {

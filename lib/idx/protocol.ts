@@ -38,6 +38,7 @@ export class IndexProtocol {
         buf.writeBigUInt64LE(0n, 28);  // dataFileSize
         buf.writeUInt32LE(0, 36);  // latestSequence
         buf.writeUInt8(autoIncrementSequence ? 1 : 0, 40);  // autoIncrementSequence
+        buf.writeUInt32LE(0, 41);  // flags
         return buf;
     }
 
@@ -52,8 +53,13 @@ export class IndexProtocol {
             dataFileSize: buf.readBigUInt64LE(28),
             latestSequence: buf.readUInt32LE(36),
             autoIncrementSequence: buf.readUInt8(40) === 1,
-            reserved: buf.subarray(41, 64),
+            flags: buf.readUInt32LE(41),
+            reserved: buf.subarray(45, 64),
         };
+    }
+
+    static writeFlags(buf: Buffer, flags: number): void {
+        buf.writeUInt32LE(flags, 41);
     }
 
     static updateHeaderCounts(

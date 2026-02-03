@@ -17,3 +17,7 @@ export interface DataFileOptions<T> {
     forceTruncate?: boolean;
     indexFileOpt: IndexFileOptions;
 }
+
+export interface DataFileReaderOptions<T> {
+    serializer: Serializer<T>;
+}

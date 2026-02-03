@@ -9,6 +9,7 @@ export interface IndexHeader {
     dataFileSize: bigint;
     latestSequence: number;
     autoIncrementSequence: boolean;
+    flags: number;
     reserved: Buffer;
 }
 

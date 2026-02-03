@@ -117,6 +117,7 @@ export class DataWriter<T> {
         this.currentOffset += BigInt(buf.length);
         ++this.recordCount;
 
+        this.writeHeader();
         return this.latestSequence;
     }
 
@@ -149,8 +150,11 @@ export class DataWriter<T> {
         return this.latestSequence;
     }
 
-    getNextSequence(): number {
-        return this.latestSequence + 1;
+    writeHeader(): void {
+        if (this.fd === null || !this.headerBuf) return;
+
+        DataProtocol.updateHeader(this.headerBuf, this.currentOffset, this.recordCount);
+        fs.writeSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
     }
 
     sync(): void {
@@ -159,8 +163,6 @@ export class DataWriter<T> {
         DataProtocol.updateHeader(this.headerBuf, this.currentOffset, this.recordCount);
         fs.writeSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
         fs.fsyncSync(this.fd);
-
-        this.indexWriter.syncAll();
     }
 
     close(): void {
@@ -173,6 +175,10 @@ export class DataWriter<T> {
 
         this.indexWriter.close();
         this.headerBuf = null;
+    }
+
+    writeFlags(flags: number): void {
+        this.indexWriter.writeFlags(flags);
     }
 
     getStats() {

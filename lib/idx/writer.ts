@@ -151,6 +151,9 @@ export class IndexWriter {
             this.dataFileSize = newDataEnd;
         }
 
+        // Sync immediately after write
+        this.writeHeader();
+
         return true;
     }
 
@@ -158,7 +161,7 @@ export class IndexWriter {
         return this.latestSequence;
     }
 
-    syncHeader(): void {
+    writeHeader(): void {
         if (!this.headerBuf || this.fd === null) return;
 
         // Update header counts
@@ -177,7 +180,7 @@ export class IndexWriter {
         if (this.fd === null) return;
 
         // Sync header first
-        this.syncHeader();
+        this.writeHeader();
 
         // Sync all file changes to disk
         fs.fsyncSync(this.fd);
@@ -196,6 +199,16 @@ export class IndexWriter {
         // 3. Clean up buffers
         this.headerBuf = null;
         this.entryBuf = null;
+    }
+
+    writeFlags(flags: number): void {
+        if (!this.headerBuf || this.fd === null) {
+            throw new Error('Index file not opened');
+        }
+
+        IndexProtocol.writeFlags(this.headerBuf, flags);
+        fs.writeSync(this.fd, this.headerBuf, 41, 4, 41);
+        fs.fsyncSync(this.fd);
     }
 
     getStats() {

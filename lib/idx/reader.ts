@@ -7,14 +7,14 @@ export class IndexReader {
     private buffer: Buffer | null = null;
     private header: IndexHeader | null = null;
 
-    readonly path: string;
+    private path: string | null = null;
 
-    constructor(path: string) {
-        this.path = path;
+    constructor() {
     }
 
-    open(): void {
+    open(idxFilePath: string): void {
         // Read entire file into buffer (simpler than mmap for read-only access)
+        this.path = idxFilePath;
         this.buffer = fs.readFileSync(this.path);
         this.header = IndexProtocol.readHeader(this.buffer);
     }
@@ -22,6 +22,11 @@ export class IndexReader {
     getHeader(): IndexHeader {
         if (!this.header) throw new Error('Index file not opened');
         return this.header;
+    }
+
+    getFlags(): number {
+        if (!this.header) throw new Error('Index file not opened');
+        return this.header.flags;
     }
 
     getEntry(index: number): IndexEntry | null {
