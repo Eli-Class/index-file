@@ -161,6 +161,11 @@ export class IndexWriter {
         return this.latestSequence;
     }
 
+    getFlags(): number {
+        if (!this.headerBuf) throw new Error('Index file not opened');
+        return this.headerBuf.readUInt32LE(41);
+    }
+
     writeHeader(): void {
         if (!this.headerBuf || this.fd === null) return;
 

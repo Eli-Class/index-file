@@ -181,6 +181,10 @@ export class DataWriter<T> {
         this.indexWriter.writeFlags(flags);
     }
 
+    getFlags(): number {
+        return this.indexWriter.getFlags();
+    }
+
     getStats() {
         return {
             dataPath: this.dataPath,
