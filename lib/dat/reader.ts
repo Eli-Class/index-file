@@ -163,32 +163,24 @@ export class DataReader<T> {
         return results;
     }
 
-    /*
     getAllData(): DataEntry<T>[] {
         if (this.fd === null) throw new Error('Data file not opened');
-     
-        const entries = this.indexReader.getAllEntries();
+
         const results: DataEntry<T>[] = [];
-     
-        for (const entry of entries) {
-            const buf = this.readRecordAt(this.fd, entry.offset, entry.length);
-            const result = DataProtocol.deserializeRecord(
-                buf,
-                0,
-                this.serializer
-            );
-            if (result) {
-                results.push({
-                    sequence: entry.sequence,
-                    timestamp: entry.timestamp,
-                    data: result.data,
-                });
-            }
+        let first = this.getByIndex(0);
+        if (first == null) {
+            return [];
         }
-     
+        results.push(first);
+
+        do {
+            const entry = this.readNext();
+            if (!entry) break;
+            results.push(entry);
+        } while (true);
+
         return results;
     }
-    */
 
     getRecordCount(): number {
         return this.indexReader.getHeader().writtenCnt;

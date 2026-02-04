@@ -11,8 +11,8 @@ export class IndexReader {
     private path: string | null = null;
 
     // Sequential read state
-    private currentIndex: number = 0;
-    private currentSequence: number = 0;
+    private currentIndex: number = -1;
+    private currentSequence: number = -1;
 
     // Reusable buffer for reading entries
     private entryBuffer: Buffer = Buffer.alloc(INDEX_ENTRY_SIZE);
@@ -49,22 +49,6 @@ export class IndexReader {
         return this.readEntryAt(this.fd, index);
     }
 
-    findBySequenceRange(startSeq: number, endSeq: number): { index: number; entry: IndexEntry }[] {
-        if (this.fd === null || !this.header) throw new Error('Index file not opened');
-
-        const results: { index: number; entry: IndexEntry }[] = [];
-        const first = this.searchSequenceLowerBound(this.fd, this.header.writtenCnt, startSeq);
-        if (first == null) return [];
-
-        results.push(first);
-        for (let i = this.currentIndex; i < this.header.writtenCnt; i++) {
-            const entry = this.readNextEntry(this.fd);
-            if (entry == null || entry.sequence > endSeq) break;
-            results.push({ index: this.currentIndex, entry });
-        }
-        return results;
-    }
-
     /*
     getAllEntries(): IndexEntry[] {
         if (this.fd === null || !this.header) throw new Error('Index file not opened');
@@ -78,15 +62,39 @@ export class IndexReader {
     }
     */
 
+    findBySequenceRange(startSeq: number, endSeq: number): { index: number; entry: IndexEntry }[] {
+        if (this.fd === null || !this.header) throw new Error('Index file not opened');
+
+        const results: { index: number; entry: IndexEntry }[] = [];
+        const currIdx = this.currentIndex;
+        const first = this.searchSequenceLowerBound(this.fd, this.header.writtenCnt, startSeq);
+        if (first === null) {
+            this.currentIndex = currIdx;
+            return [];
+        }
+
+        results.push(first);
+        while (this.currentIndex < this.header.writtenCnt - 1) {
+            const entry = this.readNextEntry(this.fd);
+            if (entry == null || entry.sequence > endSeq) break;
+            results.push({ index: this.currentIndex, entry });
+        }
+        return results;
+    }
+
     findByTimeRange(startTs: bigint, endTs: bigint): { index: number; entry: IndexEntry }[] {
         if (this.fd === null || !this.header) throw new Error('Index file not opened');
 
         const results: { index: number; entry: IndexEntry }[] = [];
+        const currIdx = this.currentIndex;
         const first = this.searchTimestampLowerBound(this.fd, this.header.writtenCnt, startTs);
-        if (first === null) return [];
+        if (first === null) {
+            this.currentIndex = currIdx;
+            return [];
+        }
 
         results.push(first);
-        for (let i = this.currentIndex; i < this.header.writtenCnt; i++) {
+        while (this.currentIndex < this.header.writtenCnt - 1) {
             const entry = this.readNextEntry(this.fd);
             if (entry == null || entry.timestamp > endTs) break;
             results.push({ index: this.currentIndex, entry });
