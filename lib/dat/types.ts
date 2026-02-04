@@ -7,6 +7,7 @@ export interface Serializer<T> {
 }
 
 export interface DataEntry<T> {
+    index: number;
     sequence: number;
     timestamp: bigint;
     data: T;
