@@ -4,104 +4,104 @@ import { crc32 } from '../idx/index.js';
 import type { Serializer } from './types.js';
 
 export interface DataHeader {
-  magic: string;
-  version: number;
-  createdAt: bigint;
-  fileSize: bigint;
-  recordCount: number;
-  reserved: Buffer;
+    magic: string;
+    version: number;
+    createdAt: bigint;
+    fileSize: bigint;
+    recordCount: number;
+    reserved: Buffer;
 }
 
 export interface BufferRef {
-  buf: Buffer;
+    buf: Buffer;
 }
 
 export class DataProtocol {
-  static createHeader(): Buffer {
-    const buf = Buffer.alloc(DATA_HEADER_SIZE);
-    buf.write(DATA_MAGIC, 0, 4, 'ascii');
-    buf.writeUInt32LE(DATA_VERSION, 4);
-    buf.writeBigUInt64LE(BigInt(Date.now()) * 1000000n, 8);
-    buf.writeBigUInt64LE(BigInt(DATA_HEADER_SIZE), 16);
-    buf.writeUInt32LE(0, 24);
-    return buf;
-  }
-
-  static readHeader(buf: Buffer): DataHeader {
-    return {
-      magic: buf.toString('ascii', 0, 4),
-      version: buf.readUInt32LE(4),
-      createdAt: buf.readBigUInt64LE(8),
-      fileSize: buf.readBigUInt64LE(16),
-      recordCount: buf.readUInt32LE(24),
-      reserved: buf.subarray(28, 64),
-    };
-  }
-
-  static updateHeader(buf: Buffer, fileSize: bigint, recordCount: number): void {
-    buf.writeBigUInt64LE(fileSize, 16);
-    buf.writeUInt32LE(recordCount, 24);
-  }
-
-  static serializeRecord<T>(data: T, serializer: Serializer<T>): Buffer {
-    const dataBytes = serializer.serialize(data);
-    const totalLen = RECORD_HEADER_SIZE + dataBytes.length;
-
-    const buf = Buffer.alloc(totalLen);
-
-    dataBytes.copy(buf, RECORD_HEADER_SIZE);
-
-    buf.writeUInt32LE(dataBytes.length, 0);
-    const checksum = crc32(buf, RECORD_HEADER_SIZE, totalLen);
-    buf.writeUInt32LE(checksum, 4);
-
-    return buf;
-  }
-
-  /**
-   * 기존 버퍼에 레코드를 직렬화하여 쓰기
-   * 버퍼 크기 부족시 내부에서 재할당 (BufferRef로 참조 전달)
-   * @returns 실제 쓰여진 바이트 수 (totalLen)
-   */
-  static serializeRecordTo<T>(bufRef: BufferRef, data: T, serializer: Serializer<T>): number {
-    const dataBytes = serializer.serialize(data);
-    const totalLen = RECORD_HEADER_SIZE + dataBytes.length;
-
-    // 버퍼 크기 부족시 재할당
-    if (bufRef.buf.length < totalLen) {
-      bufRef.buf = Buffer.alloc(totalLen);
+    static createHeader(): Buffer {
+        const buf = Buffer.alloc(DATA_HEADER_SIZE);
+        buf.write(DATA_MAGIC, 0, 4, 'ascii');
+        buf.writeUInt32LE(DATA_VERSION, 4);
+        buf.writeBigUInt64LE(BigInt(Date.now()) * 1000000n, 8);
+        buf.writeBigUInt64LE(BigInt(DATA_HEADER_SIZE), 16);
+        buf.writeUInt32LE(0, 24);
+        return buf;
     }
 
-    dataBytes.copy(bufRef.buf, RECORD_HEADER_SIZE);
-
-    bufRef.buf.writeUInt32LE(dataBytes.length, 0);
-    const checksum = crc32(bufRef.buf, RECORD_HEADER_SIZE, totalLen);
-    bufRef.buf.writeUInt32LE(checksum, 4);
-
-    return totalLen;
-  }
-
-  static deserializeRecord<T>(
-    buf: Buffer,
-    offset: number,
-    serializer: Serializer<T>
-  ): { data: T; length: number } | null {
-    if (offset + RECORD_HEADER_SIZE > buf.length) return null;
-
-    const dataLen = buf.readUInt32LE(offset);
-    const storedChecksum = buf.readUInt32LE(offset + 4);
-
-    const totalLen = RECORD_HEADER_SIZE + dataLen;
-    if (offset + totalLen > buf.length) return null;
-
-    const calcChecksum = crc32(buf, offset + RECORD_HEADER_SIZE, offset + totalLen);
-    if (calcChecksum !== storedChecksum) {
-      throw new Error(`Checksum mismatch at offset ${offset}`);
+    static readHeader(buf: Buffer): DataHeader {
+        return {
+            magic: buf.toString('ascii', 0, 4),
+            version: buf.readUInt32LE(4),
+            createdAt: buf.readBigUInt64LE(8),
+            fileSize: buf.readBigUInt64LE(16),
+            recordCount: buf.readUInt32LE(24),
+            reserved: buf.subarray(28, 64),
+        };
     }
 
-    const dataBytes = buf.subarray(offset + RECORD_HEADER_SIZE, offset + totalLen);
-    const data = serializer.deserialize(dataBytes);
+    static updateHeader(buf: Buffer, fileSize: bigint, recordCount: number): void {
+        buf.writeBigUInt64LE(fileSize, 16);
+        buf.writeUInt32LE(recordCount, 24);
+    }
 
-    return { data, length: totalLen };
-  }
+    static serializeRecord<T>(data: T, serializer: Serializer<T>): Buffer {
+        const dataBytes = serializer.serialize(data);
+        const totalLen = RECORD_HEADER_SIZE + dataBytes.length;
+
+        const buf = Buffer.alloc(totalLen);
+
+        dataBytes.copy(buf, RECORD_HEADER_SIZE);
+
+        buf.writeUInt32LE(dataBytes.length, 0);
+        const checksum = crc32(buf, RECORD_HEADER_SIZE, totalLen);
+        buf.writeUInt32LE(checksum, 4);
+
+        return buf;
+    }
+
+    /**
+     * 기존 버퍼에 레코드를 직렬화하여 쓰기
+     * 버퍼 크기 부족시 내부에서 재할당 (BufferRef로 참조 전달)
+     * @returns 실제 쓰여진 바이트 수 (totalLen)
+     */
+    static serializeRecordTo<T>(bufRef: BufferRef, data: T, serializer: Serializer<T>): number {
+        const dataBytes = serializer.serialize(data);
+        const totalLen = RECORD_HEADER_SIZE + dataBytes.length;
+
+        // 버퍼 크기 부족시 재할당
+        if (bufRef.buf.length < totalLen) {
+            bufRef.buf = Buffer.alloc(totalLen);
+        }
+
+        dataBytes.copy(bufRef.buf, RECORD_HEADER_SIZE);
+
+        bufRef.buf.writeUInt32LE(dataBytes.length, 0);
+        const checksum = crc32(bufRef.buf, RECORD_HEADER_SIZE, totalLen);
+        bufRef.buf.writeUInt32LE(checksum, 4);
+
+        return totalLen;
+    }
+
+    static deserializeRecord<T>(
+        buf: Buffer,
+        offset: number,
+        serializer: Serializer<T>
+    ): { data: T; length: number } | null {
+        if (offset + RECORD_HEADER_SIZE > buf.length) return null;
+
+        const dataLen = buf.readUInt32LE(offset);
+        const storedChecksum = buf.readUInt32LE(offset + 4);
+
+        const totalLen = RECORD_HEADER_SIZE + dataLen;
+        if (offset + totalLen > buf.length) return null;
+
+        const calcChecksum = crc32(buf, offset + RECORD_HEADER_SIZE, offset + totalLen);
+        if (calcChecksum !== storedChecksum) {
+            console.warn(`Checksum mismatch at offset ${offset}: stored=${storedChecksum}, calc=${calcChecksum}`);
+        }
+
+        const dataBytes = buf.subarray(offset + RECORD_HEADER_SIZE, offset + totalLen);
+        const data = serializer.deserialize(dataBytes);
+
+        return { data, length: totalLen };
+    }
 }

@@ -72,14 +72,15 @@ export class IndexReader {
         if (this.fd === null || !this.header) throw new Error('Index file not opened');
 
         const results: { index: number; entry: IndexEntry }[] = [];
-        const currIdx = this.currentIndex;
         const first = this.searchSequenceLowerBound(this.fd, this.header.writtenCnt, startSeq);
         if (first === null) {
-            this.currentIndex = currIdx;
             return [];
         }
 
         results.push(first);
+        // binary search 후 currentIndex와 fd 위치를 first.index에 맞춤
+        this.readEntryAt(this.fd, first.index);
+
         while (this.currentIndex < this.header.writtenCnt - 1) {
             const entry = this.readNextEntry(this.fd);
             if (entry == null || entry.sequence > endSeq) break;
@@ -92,14 +93,15 @@ export class IndexReader {
         if (this.fd === null || !this.header) throw new Error('Index file not opened');
 
         const results: { index: number; entry: IndexEntry }[] = [];
-        const currIdx = this.currentIndex;
         const first = this.searchTimestampLowerBound(this.fd, this.header.writtenCnt, startTs);
         if (first === null) {
-            this.currentIndex = currIdx;
             return [];
         }
 
         results.push(first);
+        // binary search 후 currentIndex와 fd 위치를 first.index에 맞춤
+        this.readEntryAt(this.fd, first.index);
+
         while (this.currentIndex < this.header.writtenCnt - 1) {
             const entry = this.readNextEntry(this.fd);
             if (entry == null || entry.timestamp > endTs) break;
