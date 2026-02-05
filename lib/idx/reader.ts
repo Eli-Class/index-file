@@ -1,5 +1,6 @@
 // src/index-file/reader.ts
 import * as fs from 'node:fs';
+import * as fsext from 'fs-ext';
 import { INDEX_HEADER_SIZE, INDEX_ENTRY_SIZE, FLAG_VALID } from './constants.js';
 import { IndexProtocol } from './protocol.js';
 import type { IndexHeader, IndexEntry } from './types.js';
@@ -14,7 +15,8 @@ export class IndexReader {
     private currentIndex: number = -1;
     private currentSequence: number = -1;
 
-    // Reusable buffer for reading entries
+    // Reusable buffers
+    private headerBuf: Buffer = Buffer.alloc(INDEX_HEADER_SIZE);
     private entryBuffer: Buffer = Buffer.alloc(INDEX_ENTRY_SIZE);
 
     constructor() {
@@ -22,12 +24,16 @@ export class IndexReader {
 
     open(idxFilePath: string): void {
         this.path = idxFilePath;
+
+        // 버퍼 초기화
+        this.headerBuf.fill(0);
+        this.entryBuffer.fill(0);
+
         this.fd = fs.openSync(this.path, 'r');
 
         // Read header only (64 bytes)
-        const headerBuf = Buffer.alloc(INDEX_HEADER_SIZE);
-        fs.readSync(this.fd, headerBuf, 0, INDEX_HEADER_SIZE, 0);
-        this.header = IndexProtocol.readHeader(headerBuf);
+        fs.readSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, null);
+        this.header = IndexProtocol.readHeader(this.headerBuf);
         // 아예 최초에는 -1 로 두어서 readNextEntry 할때 자동 ++ 할때 오류를 검증
         this.currentIndex = -1;
         this.currentSequence = -1;
@@ -136,6 +142,10 @@ export class IndexReader {
         this.header = null;
         this.currentIndex = -1;
         this.currentSequence = -1;
+
+        // 버퍼 초기화
+        this.headerBuf.fill(0);
+        this.entryBuffer.fill(0);
     }
 
     // ######################################################################
@@ -143,7 +153,8 @@ export class IndexReader {
     // ######################################################################
     private readEntryAt(fd: number, index: number): IndexEntry | null {
         const offset = INDEX_HEADER_SIZE + index * INDEX_ENTRY_SIZE;
-        fs.readSync(fd, this.entryBuffer, 0, INDEX_ENTRY_SIZE, offset);
+        fsext.seekSync(fd, offset, 0);
+        fs.readSync(fd, this.entryBuffer, 0, INDEX_ENTRY_SIZE, null);
 
         const flags = this.entryBuffer.readUInt32LE(24);
         const indexEntry = this.buildIndexEntry(flags);

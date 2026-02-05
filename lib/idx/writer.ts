@@ -1,13 +1,14 @@
 // src/index-file/writer.ts
 import * as fs from 'node:fs';
+import * as fsext from 'fs-ext';
 import { INDEX_HEADER_SIZE, INDEX_ENTRY_SIZE, FLAG_VALID } from './constants.js';
 import { IndexProtocol } from './protocol.js';
 import { IndexFileOptionsRequired } from './types.js';
 
 export class IndexWriter {
     private fd: number | null = null;
-    private headerBuf: Buffer | null = null;
-    private entryBuf: Buffer | null = null;
+    private headerBuf: Buffer = Buffer.alloc(INDEX_HEADER_SIZE);
+    private entryBuf: Buffer = Buffer.alloc(INDEX_ENTRY_SIZE);
 
     private writtenCnt = 0;
     private dataFileSize = 0n;
@@ -15,6 +16,7 @@ export class IndexWriter {
 
     private path: string | null = null;
     private fileSize: number = 0;
+
 
     // see IndexFileOptions
     private maxEntries: number = 0;
@@ -31,6 +33,10 @@ export class IndexWriter {
 
         const isNew = !fs.existsSync(this.path);
 
+        // 버퍼 초기화
+        this.headerBuf.fill(0);
+        this.entryBuf.fill(0);
+
         if (isNew || forceTruncate) {
             // New file: use provided values
             this.fileSize = IndexProtocol.calcFileSize(this.maxEntries);
@@ -41,25 +47,18 @@ export class IndexWriter {
             this.fd = fs.openSync(this.path, 'w+');
             fs.ftruncateSync(this.fd, this.fileSize);
 
-            // Allocate buffers for header and entry
-            this.headerBuf = Buffer.alloc(INDEX_HEADER_SIZE);
-            this.entryBuf = Buffer.alloc(INDEX_ENTRY_SIZE);
-
             const header = IndexProtocol.createHeader(this.maxEntries, this.autoIncrementSequence);
             header.copy(this.headerBuf, 0);
 
             // Write header to file
-            fs.writeSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, 0);
+            fs.writeSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, null);
             fs.fsyncSync(this.fd);
         } else {
             // Existing file: read header first
             this.fd = fs.openSync(this.path, 'r+');
 
             try {
-                this.headerBuf = Buffer.alloc(INDEX_HEADER_SIZE);
-                this.entryBuf = Buffer.alloc(INDEX_ENTRY_SIZE);
-
-                fs.readSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, 0);
+                fs.readSync(this.fd, this.headerBuf, 0, INDEX_HEADER_SIZE, null);
                 const header = IndexProtocol.readHeader(this.headerBuf);
 
                 if (this.maxEntries !== header.entryCount) {
@@ -86,14 +85,17 @@ export class IndexWriter {
                 this.writtenCnt = header.writtenCnt;
                 this.dataFileSize = header.dataFileSize;
                 this.latestSequence = header.latestSequence;
+                // Writer 중 이미 있었으면 가장 마지막으로 이동
+                const fileOffset = INDEX_HEADER_SIZE + this.writtenCnt * INDEX_ENTRY_SIZE;
+                fsext.seekSync(this.fd, fileOffset, 0);
             } catch (error) {
                 // Clean up resources on error
                 if (this.fd !== null) {
                     fs.closeSync(this.fd);
                     this.fd = null;
                 }
-                this.headerBuf = null;
-                this.entryBuf = null;
+                this.headerBuf.fill(0);
+                this.entryBuf.fill(0);
                 throw error;
             }
         }
@@ -107,7 +109,7 @@ export class IndexWriter {
         sequence?: number,
         timestamp?: bigint
     ): boolean {
-        if (!this.entryBuf || this.fd === null) throw new Error('Index file not opened');
+        if (this.fd === null) throw new Error('Index file not opened');
         if (this.writtenCnt >= this.maxEntries) {
             throw new Error(`Data count exceed provide : ${this.writtenCnt + 1} - max : ${this.maxEntries}`);
         }
@@ -125,11 +127,8 @@ export class IndexWriter {
 
         const ts = timestamp ?? BigInt(Date.now()) * 1000000n;
 
-        // Create a temporary buffer for this entry
-        const tempBuf = Buffer.alloc(INDEX_HEADER_SIZE + (this.writtenCnt + 1) * INDEX_ENTRY_SIZE);
-
-        // Write entry to temp buffer
-        IndexProtocol.writeEntry(tempBuf, this.writtenCnt, {
+        // Write entry to entryBuf (offset 0부터)
+        IndexProtocol.writeEntry(this.entryBuf, {
             sequence: seq,
             timestamp: ts,
             offset,
@@ -137,11 +136,8 @@ export class IndexWriter {
             flags: FLAG_VALID,
         });
 
-        // Calculate file offset for this entry
-        const fileOffset = INDEX_HEADER_SIZE + this.writtenCnt * INDEX_ENTRY_SIZE;
-
-        // Write entry to file
-        fs.writeSync(this.fd, tempBuf, fileOffset, INDEX_ENTRY_SIZE, fileOffset);
+        // Write entry to file (현재 fd 위치에 쓰기)
+        fs.writeSync(this.fd, this.entryBuf, 0, INDEX_ENTRY_SIZE, null);
 
         this.writtenCnt++;
         this.latestSequence = seq;
@@ -162,12 +158,12 @@ export class IndexWriter {
     }
 
     getFlags(): number {
-        if (!this.headerBuf) throw new Error('Index file not opened');
+        if (this.fd === null) throw new Error('Index file not opened');
         return this.headerBuf.readUInt32LE(41);
     }
 
     writeHeader(): void {
-        if (!this.headerBuf || this.fd === null) return;
+        if (this.fd === null) return;
 
         // Update header counts
         IndexProtocol.updateHeaderCounts(
@@ -202,12 +198,12 @@ export class IndexWriter {
         this.fd = null;
 
         // 3. Clean up buffers
-        this.headerBuf = null;
-        this.entryBuf = null;
+        this.headerBuf.fill(0);
+        this.entryBuf.fill(0);
     }
 
     writeFlags(flags: number): void {
-        if (!this.headerBuf || this.fd === null) {
+        if (this.fd === null) {
             throw new Error('Index file not opened');
         }
 

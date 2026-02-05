@@ -12,6 +12,10 @@ export interface DataHeader {
   reserved: Buffer;
 }
 
+export interface BufferRef {
+  buf: Buffer;
+}
+
 export class DataProtocol {
   static createHeader(): Buffer {
     const buf = Buffer.alloc(DATA_HEADER_SIZE);
@@ -52,6 +56,29 @@ export class DataProtocol {
     buf.writeUInt32LE(checksum, 4);
 
     return buf;
+  }
+
+  /**
+   * 기존 버퍼에 레코드를 직렬화하여 쓰기
+   * 버퍼 크기 부족시 내부에서 재할당 (BufferRef로 참조 전달)
+   * @returns 실제 쓰여진 바이트 수 (totalLen)
+   */
+  static serializeRecordTo<T>(bufRef: BufferRef, data: T, serializer: Serializer<T>): number {
+    const dataBytes = serializer.serialize(data);
+    const totalLen = RECORD_HEADER_SIZE + dataBytes.length;
+
+    // 버퍼 크기 부족시 재할당
+    if (bufRef.buf.length < totalLen) {
+      bufRef.buf = Buffer.alloc(totalLen);
+    }
+
+    dataBytes.copy(bufRef.buf, RECORD_HEADER_SIZE);
+
+    bufRef.buf.writeUInt32LE(dataBytes.length, 0);
+    const checksum = crc32(bufRef.buf, RECORD_HEADER_SIZE, totalLen);
+    bufRef.buf.writeUInt32LE(checksum, 4);
+
+    return totalLen;
   }
 
   static deserializeRecord<T>(

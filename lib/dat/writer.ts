@@ -1,13 +1,17 @@
 // src/data-file/writer.ts
 import * as fs from 'node:fs';
+import * as fsext from 'fs-ext';
 import { DATA_HEADER_SIZE } from './constants.js';
-import { DataProtocol } from './protocol.js';
+import { DataProtocol, BufferRef } from './protocol.js';
 import { IndexWriter, IndexFileOptionsRequired } from '../idx/index.js';
 import type { Serializer, DataFileOptions } from './types.js';
 
+const DEFAULT_DATA_BUF_SIZE = 4096;
+
 export class DataWriter<T> {
     private fd: number | null = null;
-    private headerBuf: Buffer | null = null;
+    private headerBuf: Buffer = Buffer.alloc(DATA_HEADER_SIZE);
+    private dataBufRef: BufferRef = { buf: Buffer.alloc(DEFAULT_DATA_BUF_SIZE) };
     private currentOffset: bigint = BigInt(DATA_HEADER_SIZE);
     private recordCount = 0;
 
@@ -65,17 +69,19 @@ export class DataWriter<T> {
         this.fd = fs.openSync(this.dataPath,
             isNew || this.forceTruncate ? 'w+' : 'r+');
 
-        try {
-            this.headerBuf = Buffer.alloc(DATA_HEADER_SIZE);
+        // 버퍼 초기화
+        this.headerBuf.fill(0);
+        this.dataBufRef.buf.fill(0);
 
+        try {
             if (isNew || this.forceTruncate) {
                 const header = DataProtocol.createHeader();
-                fs.writeSync(this.fd, header, 0, DATA_HEADER_SIZE, 0);
+                fs.writeSync(this.fd, header, 0, DATA_HEADER_SIZE, null);
                 this.currentOffset = BigInt(DATA_HEADER_SIZE);
                 this.recordCount = 0;
                 this.latestSequence = 0;
             } else {
-                fs.readSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
+                fs.readSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, null);
                 const header = DataProtocol.readHeader(this.headerBuf);
 
                 // Validate: Data file recordCount must match Index file writtenCnt
@@ -88,6 +94,7 @@ export class DataWriter<T> {
                 this.currentOffset = header.fileSize;
                 this.recordCount = header.recordCount;
                 this.latestSequence = this.indexWriter.getLatestSequence();
+                fsext.seekSync(this.fd, 0, 2); // 가장 마지막으로
             }
         } catch (error) {
             // Clean up resources on error
@@ -95,7 +102,8 @@ export class DataWriter<T> {
                 fs.closeSync(this.fd);
                 this.fd = null;
             }
-            this.headerBuf = null;
+            this.headerBuf.fill(0);
+            this.dataBufRef.buf.fill(0);
             throw error;
         }
     }
@@ -103,18 +111,19 @@ export class DataWriter<T> {
     append(data: T, sequence?: number, timestamp?: bigint): number {
         if (this.fd === null) throw new Error('Data file not opened');
 
-        const buf = DataProtocol.serializeRecord(data, this.serializer);
+        // dataBufRef에 직렬화 (내부에서 필요시 재할당)
+        const writtenLen = DataProtocol.serializeRecordTo(this.dataBufRef, data, this.serializer);
         const offset = this.currentOffset;
 
-        fs.writeSync(this.fd, buf, 0, buf.length, Number(offset));
+        fs.writeSync(this.fd, this.dataBufRef.buf, 0, writtenLen, null);
 
         // Write to index file
-        this.indexWriter.write(offset, buf.length, sequence, timestamp);
+        this.indexWriter.write(offset, writtenLen, sequence, timestamp);
 
         // Update latestSequence to the most recent sequence
         this.latestSequence = this.indexWriter.getLatestSequence();
 
-        this.currentOffset += BigInt(buf.length);
+        this.currentOffset += BigInt(writtenLen);
         ++this.recordCount;
 
         this.writeHeader();
@@ -151,14 +160,14 @@ export class DataWriter<T> {
     }
 
     writeHeader(): void {
-        if (this.fd === null || !this.headerBuf) return;
+        if (this.fd === null) return;
 
         DataProtocol.updateHeader(this.headerBuf, this.currentOffset, this.recordCount);
         fs.writeSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
     }
 
     sync(): void {
-        if (this.fd === null || !this.headerBuf) return;
+        if (this.fd === null) return;
 
         DataProtocol.updateHeader(this.headerBuf, this.currentOffset, this.recordCount);
         fs.writeSync(this.fd, this.headerBuf, 0, DATA_HEADER_SIZE, 0);
@@ -174,7 +183,8 @@ export class DataWriter<T> {
         }
 
         this.indexWriter.close();
-        this.headerBuf = null;
+        this.headerBuf.fill(0);
+        this.dataBufRef.buf.fill(0);
     }
 
     writeFlags(flags: number): void {

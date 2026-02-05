@@ -1,5 +1,6 @@
 // src/data-file/reader.ts
 import * as fs from 'node:fs';
+import * as fsext from 'fs-ext';
 import { DATA_HEADER_SIZE } from './constants.js';
 import { DataProtocol, DataHeader } from './protocol.js';
 import { IndexReader } from '../idx/index.js';
@@ -28,7 +29,7 @@ export class DataReader<T> {
 
         // Read header only
         const headerBuf = Buffer.alloc(DATA_HEADER_SIZE);
-        fs.readSync(this.fd, headerBuf, 0, DATA_HEADER_SIZE, 0);
+        fs.readSync(this.fd, headerBuf, 0, DATA_HEADER_SIZE, null);
         this.header = DataProtocol.readHeader(headerBuf);
 
         this.indexReader.open(this.indexPath);
@@ -36,7 +37,8 @@ export class DataReader<T> {
 
     private readRecordAt(fd: number, offset: bigint, length: number): { data: T; length: number } | null {
         const buf = Buffer.alloc(length);
-        fs.readSync(fd, buf, 0, length, Number(offset));
+        fsext.seekSync(fd, Number(offset), 0);
+        fs.readSync(fd, buf, 0, length, null);
         const result = DataProtocol.deserializeRecord(
             buf,
             0,

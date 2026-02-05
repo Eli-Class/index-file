@@ -73,39 +73,15 @@ export class IndexProtocol {
         buf.writeUInt32LE(latestSequence, 36);
     }
 
-    static writeEntry(buf: Buffer, index: number, entry: Omit<IndexEntry, 'checksum'>): void {
-        const off = INDEX_HEADER_SIZE + index * INDEX_ENTRY_SIZE;
+    static writeEntry(buf: Buffer, entry: Omit<IndexEntry, 'checksum'>): void {
+        buf.writeUInt32LE(entry.sequence, 0);
+        buf.writeBigUInt64LE(entry.timestamp, 4);
+        buf.writeBigUInt64LE(entry.offset, 12);
+        buf.writeUInt32LE(entry.length, 20);
+        buf.writeUInt32LE(entry.flags | FLAG_VALID, 24);
 
-        buf.writeUInt32LE(entry.sequence, off);
-        buf.writeBigUInt64LE(entry.timestamp, off + 4);
-        buf.writeBigUInt64LE(entry.offset, off + 12);
-        buf.writeUInt32LE(entry.length, off + 20);
-        buf.writeUInt32LE(entry.flags | FLAG_VALID, off + 24);
-
-        const checksum = crc32(buf, off, off + 28);
-        buf.writeUInt32LE(checksum, off + 28);
-    }
-
-    static readEntry(buf: Buffer, index: number): IndexEntry | null {
-        const off = INDEX_HEADER_SIZE + index * INDEX_ENTRY_SIZE;
-        const flags = buf.readUInt32LE(off + 24);
-
-        if (!(flags & FLAG_VALID)) return null;
-
-        return {
-            sequence: buf.readUInt32LE(off),
-            timestamp: buf.readBigUInt64LE(off + 4),
-            offset: buf.readBigUInt64LE(off + 12),
-            length: buf.readUInt32LE(off + 20),
-            flags,
-            checksum: buf.readUInt32LE(off + 28),
-        };
-    }
-
-    static isValidEntry(buf: Buffer, index: number): boolean {
-        const off = INDEX_HEADER_SIZE + index * INDEX_ENTRY_SIZE;
-        const flags = buf.readUInt32LE(off + 24);
-        return (flags & FLAG_VALID) !== 0;
+        const checksum = crc32(buf, 0, 28);
+        buf.writeUInt32LE(checksum, 28);
     }
 
     static calcFileSize(entryCount: number): number {
